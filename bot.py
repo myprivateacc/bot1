@@ -4,6 +4,11 @@ Telegram Group Broadcaster
 Login with your Telegram account and broadcast a text message
 OR forward an existing message to every group you have joined.
 
+Two intervals:
+  • Send interval  – gap (seconds) between each group send within a round
+  • Round interval – sleep time (seconds) after ALL groups are done,
+                     before the next round starts (runs forever until Ctrl+C)
+
 Requirements:
     pip install telethon
 
@@ -45,12 +50,23 @@ def prompt(msg: str, default: str = "") -> str:
         sys.exit(0)
 
 
+def fmt_seconds(secs: float) -> str:
+    """Human-readable time string."""
+    secs = int(secs)
+    h, rem = divmod(secs, 3600)
+    m, s   = divmod(rem, 60)
+    if h:
+        return f"{h}h {m}m {s}s"
+    if m:
+        return f"{m}m {s}s"
+    return f"{s}s"
+
+
 async def get_all_groups(client) -> list:
     """Return every dialog that is a group or supergroup/channel."""
     groups = []
     async for dialog in client.iter_dialogs():
         entity = dialog.entity
-        # Skip forbidden / unavailable entities
         if isinstance(entity, (ChatForbidden, ChannelForbidden)):
             continue
         if isinstance(entity, Chat):
@@ -58,18 +74,26 @@ async def get_all_groups(client) -> list:
         elif isinstance(entity, Channel) and (entity.megagroup or entity.broadcast is False):
             groups.append(dialog)
         elif isinstance(entity, Channel):
-            # Include broadcast channels too (user may want them)
             groups.append(dialog)
     return groups
 
 
-async def broadcast_text(client, groups: list, text: str, interval: float):
-    """Send a text message to every group with the given interval (seconds)."""
+async def round_countdown(seconds: float):
+    """Live countdown before the next round."""
+    print()
+    remaining = int(seconds)
+    while remaining > 0:
+        print(f"\r  🔄  Next round in {fmt_seconds(remaining)} … (Ctrl+C to stop)   ", end="", flush=True)
+        await asyncio.sleep(1)
+        remaining -= 1
+    print(f"\r  ✅  Round interval done. Starting next round…{' '*30}")
+
+
+async def broadcast_text(client, groups: list, text: str, send_interval: float) -> tuple:
+    """Send a text message to every group. Returns (success, failed)."""
     total   = len(groups)
     success = 0
     failed  = 0
-
-    print(f"\n📤  Starting broadcast to {total} group(s)…\n")
 
     for idx, dialog in enumerate(groups, 1):
         name = dialog.name or str(dialog.id)
@@ -95,18 +119,16 @@ async def broadcast_text(client, groups: list, text: str, interval: float):
             failed += 1
 
         if idx < total:
-            await asyncio.sleep(interval)
+            await asyncio.sleep(send_interval)
 
-    print(f"\n🏁  Done — {success} sent, {failed} failed out of {total} groups.")
+    return success, failed
 
 
-async def broadcast_forward(client, groups: list, source_chat, message_id: int, interval: float):
-    """Forward a specific message to every group."""
+async def broadcast_forward(client, groups: list, source_chat, message_id: int, send_interval: float) -> tuple:
+    """Forward a specific message to every group. Returns (success, failed)."""
     total   = len(groups)
     success = 0
     failed  = 0
-
-    print(f"\n📤  Starting forward to {total} group(s)…\n")
 
     for idx, dialog in enumerate(groups, 1):
         name = dialog.name or str(dialog.id)
@@ -132,9 +154,9 @@ async def broadcast_forward(client, groups: list, source_chat, message_id: int, 
             failed += 1
 
         if idx < total:
-            await asyncio.sleep(interval)
+            await asyncio.sleep(send_interval)
 
-    print(f"\n🏁  Done — {success} forwarded, {failed} failed out of {total} groups.")
+    return success, failed
 
 
 # ─────────────────────────────────────────────
@@ -160,7 +182,7 @@ async def main():
 
     # ── Connect & Login ───────────────────────
     client = TelegramClient(SESSION_NAME, API_ID, API_HASH)
-    await client.start()          # prompts for phone / OTP / 2FA if needed
+    await client.start()
     me = await client.get_me()
     print(f"\n✔  Logged in as: {me.first_name} (@{me.username})")
 
@@ -180,17 +202,25 @@ async def main():
     print("  2 → Forward an existing message")
     mode = prompt("\nEnter 1 or 2 : ", "1")
 
-    # ── Interval ─────────────────────────────
+    # ── Intervals ────────────────────────────
+    print()
     try:
-        interval = float(prompt("Interval between each send (seconds) [default 5]: ", "5"))
+        send_interval = float(prompt("Send interval  – gap between each group send (seconds) [default 5]: ", "5"))
     except ValueError:
-        interval = 5.0
-    print(f"⏱  Interval set to {interval}s")
+        send_interval = 5.0
 
-    # ── Mode 1 : Text ─────────────────────────
+    try:
+        round_interval = float(prompt("Round interval – sleep after all groups are done (seconds) [default 3600]: ", "3600"))
+    except ValueError:
+        round_interval = 3600.0
+
+    print(f"\n⏱  Send interval  : {send_interval}s  (per group)")
+    print(f"🔄  Round interval : {fmt_seconds(round_interval)}  (after each full round)\n")
+
+    # ── Mode-specific setup ───────────────────
     if mode == "1":
-        print("\nType / paste your message below.")
-        print("(Enter a blank line followed by END on its own line to finish)\n")
+        print("Type / paste your message below.")
+        print("(Type END on its own line to finish)\n")
         lines = []
         while True:
             line = input()
@@ -205,20 +235,16 @@ async def main():
             return
 
         print(f"\n📝  Message preview ({len(text)} chars):\n{'-'*40}\n{text}\n{'-'*40}")
-        confirm = prompt("Send to all groups? (yes/no) : ", "no")
+        confirm = prompt("Send to all groups repeatedly? (yes/no) : ", "no")
         if confirm.lower() not in ("yes", "y"):
             print("Cancelled.")
             await client.disconnect()
             return
 
-        await broadcast_text(client, groups, text, interval)
-
-    # ── Mode 2 : Forward ──────────────────────
     elif mode == "2":
-        print("\nTo forward a message you need:")
+        print("To forward a message you need:")
         print("  • The username or ID of the chat that contains the message")
-        print("  • The Message ID (right-click a message → Copy Message Link,")
-        print("    the last number in the URL is the message ID)\n")
+        print("  • The Message ID (right-click → Copy Message Link, last number in URL)\n")
 
         source = prompt("Source chat username or ID (e.g. @mychat or 123456): ")
         try:
@@ -235,19 +261,41 @@ async def main():
             await client.disconnect()
             return
 
-        confirm = prompt("\nForward to all groups? (yes/no) : ", "no")
+        confirm = prompt("\nForward to all groups repeatedly? (yes/no) : ", "no")
         if confirm.lower() not in ("yes", "y"):
             print("Cancelled.")
             await client.disconnect()
             return
 
-        await broadcast_forward(client, groups, source_entity, msg_id, interval)
-
     else:
         print("❌  Invalid choice.")
+        await client.disconnect()
+        return
+
+    # ── Broadcast loop ────────────────────────
+    round_num = 0
+    try:
+        while True:
+            round_num += 1
+            print(f"\n{'='*55}")
+            print(f"  📣  ROUND {round_num}  —  {len(groups)} group(s)")
+            print(f"{'='*55}\n")
+
+            if mode == "1":
+                success, failed = await broadcast_text(client, groups, text, send_interval)
+            else:
+                success, failed = await broadcast_forward(client, groups, source_entity, msg_id, send_interval)
+
+            print(f"\n🏁  Round {round_num} complete — ✅ {success} sent, ❌ {failed} failed.")
+            print(f"💤  Sleeping for {fmt_seconds(round_interval)} before next round…")
+
+            await round_countdown(round_interval)
+
+    except KeyboardInterrupt:
+        print(f"\n\n⛔  Stopped by user after {round_num} round(s).")
 
     await client.disconnect()
-    print("\n👋  Disconnected. Bye!")
+    print("👋  Disconnected. Bye!")
 
 
 if __name__ == "__main__":
