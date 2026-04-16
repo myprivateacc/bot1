@@ -27,7 +27,7 @@ from telethon.errors import (
 #  Get yours at https://my.telegram.org/apps
 # ─────────────────────────────────────────────
 API_ID   = 21752358   # e.g. 1234567
-API_HASH = fb46a136fed4a4de27ab057c7027fec3   # e.g. "abcdef1234567890abcdef1234567890"
+API_HASH = "fb46a136fed4a4de27ab057c7027fec3"   # e.g. "abcdef1234567890abcdef1234567890"
 
 SESSION_NAME = "adbot01"
 
