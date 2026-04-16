@@ -29,7 +29,7 @@ from telethon.errors import (
 API_ID   = 21752358   # e.g. 1234567
 API_HASH = fb46a136fed4a4de27ab057c7027fec3   # e.g. "abcdef1234567890abcdef1234567890"
 
-SESSION_NAME = "tg_broadcaster"
+SESSION_NAME = "adbot01"
 
 
 # ─────────────────────────────────────────────
